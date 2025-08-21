@@ -1,17 +1,27 @@
 from flask import Flask, request, jsonify
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from werkzeug.security import generate_password_hash, check_password_hash
-from models import db, User   # asegúrate de tener tu modelo definido
+from models import db, User   
 from models import db, Game, Order, OrderItem
+from flask_migrate import Migrate
 
 
 app = Flask(__name__)
+migrate = Migrate(app, db)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
-app.config['JWT_SECRET_KEY'] = 'david3010'  # cámbialo en producción
+app.config['JWT_SECRET_KEY'] = 'david3010'  
 
 db.init_app(app)
 jwt = JWTManager(app)
+
+
+#########################################################
+#                                                       #
+#                       USUARIOS                        #
+#                                                       #
+#########################################################
+
 
 # Registro
 @app.route('/api/users/register', methods=['POST'])
@@ -42,7 +52,7 @@ def login():
     user = User.query.filter_by(username=data['username']).first()
     if user and check_password_hash(user.password, data['password']):
         token = create_access_token(
-            identity=str(user.id),   # ahora es un string
+            identity=str(user.id),   
             additional_claims={"is_admin": user.is_admin}
         )
         return jsonify(access_token=token)
@@ -52,7 +62,7 @@ def login():
 @app.route('/api/users/<int:user_id>', methods=['GET'])
 @jwt_required()
 def get_user(user_id):
-    current_user_id = int(get_jwt_identity())   # ahora sí, string → int
+    current_user_id = int(get_jwt_identity())   
     claims = get_jwt()
     is_admin = claims.get("is_admin", False)
 
@@ -71,7 +81,7 @@ def get_user(user_id):
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
 @jwt_required()
 def update_user(user_id):
-    current_user_id = int(get_jwt_identity())   # identity es un string con el id
+    current_user_id = int(get_jwt_identity())  
     claims = get_jwt()
     is_admin = claims.get("is_admin", False)
 
@@ -94,7 +104,7 @@ def update_user(user_id):
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
 @jwt_required()
 def delete_user(user_id):
-    current_user_id = get_jwt_identity()  # esto es un número o string
+    current_user_id = get_jwt_identity() 
     current_user = User.query.get(current_user_id)
 
     if not current_user or not current_user.is_admin:
@@ -123,9 +133,9 @@ def create_game():
 
     new_game = Game(
         title=data['title'],
-        description=data.get('description', ''),  # opcional
+        description=data.get('description', ''),  
         price=float(data['price']),
-        stock=int(data.get('stock', 0))           # opcional, default 0
+        stock=int(data.get('stock', 0))           
     )
 
     db.session.add(new_game)
@@ -159,12 +169,11 @@ def get_game(game_id):
 #Actualizar el juego
 
 @app.route('/api/games/<int:game_id>', methods=['PUT'])
-@jwt_required()  # opcional, si quieres que solo usuarios logueados puedan modificar
+@jwt_required() 
 def update_game(game_id):
-    game = Game.query.get_or_404(game_id)   # Busca el juego o devuelve 404
+    game = Game.query.get_or_404(game_id)   
     data = request.get_json(force=True)
 
-    # Actualizar solo los campos que vengan en el JSON
     if 'title' in data:
         game.title = data['title']
     if 'description' in data:
@@ -190,7 +199,7 @@ def update_game(game_id):
 #Eliminar el juego
 
 @app.route('/api/games/<int:game_id>', methods=['DELETE'])
-@jwt_required()  # opcional, si solo usuarios logueados o admins pueden borrar
+@jwt_required()  
 def delete_game(game_id):
     game = Game.query.get_or_404(game_id)
 
@@ -198,6 +207,93 @@ def delete_game(game_id):
     db.session.commit()
 
     return jsonify({"msg": f"Videojuego '{game.title}' eliminado con éxito"})
+
+
+#########################################################
+#                                                       #
+#                       PEDIDOS                         #
+#                                                       #
+#########################################################
+
+
+# Crear el pedido
+
+@app.route('/api/orders', methods=['POST'])
+def create_order():
+    data = request.get_json(force=True)
+
+    if not data or "items" not in data or "user_id" not in data:
+        return jsonify({"msg": "El pedido debe contener user_id e items"}), 400
+
+    user_id = data["user_id"]
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"msg": f"Usuario con id {user_id} no existe"}), 404
+
+    new_order = Order(user_id=user_id)
+    db.session.add(new_order)
+    db.session.flush()  
+
+    for item in data["items"]:
+        game = Game.query.get(item["game_id"])
+        if not game:
+            return jsonify({"msg": f"Juego con id {item['game_id']} no existe"}), 404
+        if game.stock < item["quantity"]:
+            return jsonify({"msg": f"No hay suficiente stock para {game.title}"}), 400
+
+        game.stock -= item["quantity"]
+
+        order_item = OrderItem(order_id=new_order.id, game_id=game.id, quantity=item["quantity"])
+        db.session.add(order_item)
+
+    db.session.commit()
+
+    return jsonify({"msg": "Pedido creado", "order_id": new_order.id}), 201
+
+
+
+# Visualizar un pedido 
+
+@app.route('/api/orders/<int:order_id>', methods=['GET'])
+@jwt_required()
+def get_order(order_id):
+    order = Order.query.get_or_404(order_id)
+    return jsonify({
+        "id": order.id,
+        "user_id": order.user_id,
+        "created_at": order.created_at,
+        "status": order.status,
+        "items": [
+            {"game_id": item.game_id, "quantity": item.quantity}
+            for item in order.items
+        ]
+    })
+
+
+# Actualizar el pedido
+
+@app.route('/api/orders/<int:order_id>', methods=['PUT'])
+@jwt_required()
+def update_order(order_id):
+    order = Order.query.get_or_404(order_id)
+    data = request.get_json(force=True)
+
+    if "status" in data:
+        order.status = data["status"]
+
+    db.session.commit()
+    return jsonify({"msg": "Pedido actualizado", "status": order.status})
+
+# Eliminar el pedido
+
+@app.route('/api/orders/<int:order_id>', methods=['DELETE'])
+@jwt_required()
+def delete_order(order_id):
+    order = Order.query.get_or_404(order_id)
+    db.session.delete(order)
+    db.session.commit()
+    return jsonify({"msg": f"Pedido {order.id} eliminado"})
 
 
 if __name__ == '__main__':
