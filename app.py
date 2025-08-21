@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 from models import db, User   # asegúrate de tener tu modelo definido
+from models import db, Game, Order, OrderItem
+
 
 app = Flask(__name__)
 
@@ -103,112 +105,102 @@ def delete_user(user_id):
     db.session.commit()
     return jsonify({"msg": "Usuario eliminado"})
 
-##JUEGOS
+#########################################################
+#                                                       #
+#                       JUEGOS                          #
+#                                                       #
+#########################################################
 
-
-@app.route('/api/games/<int:game_id>', methods=['PUT'])
-@jwt_required()
-def update_game(game_id):
-    user = get_jwt_identity()
-    if not user['is_admin']:
-        return jsonify({"msg": "No autorizado"}), 403
-
-    game = Game.query.get_or_404(game_id)
+# Crear un nuevo juego
+@app.route('/api/games', methods=['POST'])
+@jwt_required() 
+def create_game():
     data = request.get_json(force=True)
-    game.title = data.get('title', game.title)
-    game.description = data.get('description', game.description)
-    game.price = data.get('price', game.price)
-    game.stock = data.get('stock', game.stock)
+    
+    required_fields = ['title', 'price']
+    if not data or not all(field in data for field in required_fields):
+        return jsonify({"msg": "Faltan campos obligatorios: title y price"}), 400
+
+    new_game = Game(
+        title=data['title'],
+        description=data.get('description', ''),  # opcional
+        price=float(data['price']),
+        stock=int(data.get('stock', 0))           # opcional, default 0
+    )
+
+    db.session.add(new_game)
     db.session.commit()
-    return jsonify({"msg": "Juego actualizado"})
-
-@app.route('/api/games/<int:game_id>', methods=['DELETE'])
-@jwt_required()
-def delete_game(game_id):
-    user = get_jwt_identity()
-    if not user['is_admin']:
-        return jsonify({"msg": "No autorizado"}), 403
-
-    game = Game.query.get_or_404(game_id)
-    db.session.delete(game)
-    db.session.commit()
-    return jsonify({"msg": "Juego eliminado"})
-
-
-@app.route('/api/orders', methods=['POST'])
-@jwt_required()
-def create_order():
-    user_data = get_jwt_identity()
-    data = request.get_json(force=True)
-    items = data.get('items', [])
-
-    if not items:
-        return jsonify({"msg": "El pedido debe tener al menos un juego"}), 400
-
-    total = 0
-    order = Order(user_id=user_data['id'], total_price=0)
-    db.session.add(order)
-    db.session.flush()  # para obtener el ID sin commit aún
-
-    for item in items:
-        game = Game.query.get(item['game_id'])
-        if not game or game.stock < item['quantity']:
-            return jsonify({"msg": f"Stock insuficiente para {game.title if game else 'Juego'}"}), 400
-
-        game.stock -= item['quantity']
-        total += game.price * item['quantity']
-        order_item = OrderItem(order_id=order.id, game_id=game.id, quantity=item['quantity'], price=game.price)
-        db.session.add(order_item)
-
-    order.total_price = total
-    db.session.commit()
-    return jsonify({"msg": "Pedido creado", "order_id": order.id}), 201
-
-@app.route('/api/orders/user/<int:user_id>', methods=['GET'])
-@jwt_required()
-def get_user_orders(user_id):
-    user_data = get_jwt_identity()
-    if user_data['id'] != user_id and not user_data['is_admin']:
-        return jsonify({"msg": "No autorizado"}), 403
-
-    orders = Order.query.filter_by(user_id=user_id).all()
-    return jsonify([
-        {"id": o.id, "total_price": o.total_price, "created_at": o.created_at}
-        for o in orders
-    ])
-
-@app.route('/api/orders/<int:order_id>', methods=['GET'])
-@jwt_required()
-def get_order(order_id):
-    user_data = get_jwt_identity()
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != user_data['id'] and not user_data['is_admin']:
-        return jsonify({"msg": "No autorizado"}), 403
 
     return jsonify({
-        "id": order.id,
-        "total_price": order.total_price,
-        "created_at": order.created_at,
-        "items": [
-            {"game_id": i.game_id, "quantity": i.quantity, "price": i.price}
-            for i in order.items
-        ]
+        "msg": "Videojuego creado",
+        "game": {
+            "id": new_game.id,
+            "title": new_game.title,
+            "description": new_game.description,
+            "price": new_game.price,
+            "stock": new_game.stock
+        }
+    }), 201
+
+
+# Visualizar un juego específico
+@app.route('/api/games/<int:game_id>', methods=['GET'])
+def get_game(game_id):
+    game = Game.query.get_or_404(game_id)
+    return jsonify({
+        "id": game.id,
+        "title": game.title,
+        "description": game.description,
+        "price": game.price,
+        "stock": game.stock
     })
 
-@app.route('/api/orders/<int:order_id>', methods=['DELETE'])
-@jwt_required()
-def delete_order(order_id):
-    user_data = get_jwt_identity()
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != user_data['id'] and not user_data['is_admin']:
-        return jsonify({"msg": "No autorizado"}), 403
 
-    db.session.delete(order)
+#Actualizar el juego
+
+@app.route('/api/games/<int:game_id>', methods=['PUT'])
+@jwt_required()  # opcional, si quieres que solo usuarios logueados puedan modificar
+def update_game(game_id):
+    game = Game.query.get_or_404(game_id)   # Busca el juego o devuelve 404
+    data = request.get_json(force=True)
+
+    # Actualizar solo los campos que vengan en el JSON
+    if 'title' in data:
+        game.title = data['title']
+    if 'description' in data:
+        game.description = data['description']
+    if 'price' in data:
+        game.price = float(data['price'])
+    if 'stock' in data:
+        game.stock = int(data['stock'])
+
     db.session.commit()
-    return jsonify({"msg": "Pedido cancelado"})
+
+    return jsonify({
+        "msg": "Videojuego actualizado",
+        "game": {
+            "id": game.id,
+            "title": game.title,
+            "description": game.description,
+            "price": game.price,
+            "stock": game.stock
+        }
+    })
+
+#Eliminar el juego
+
+@app.route('/api/games/<int:game_id>', methods=['DELETE'])
+@jwt_required()  # opcional, si solo usuarios logueados o admins pueden borrar
+def delete_game(game_id):
+    game = Game.query.get_or_404(game_id)
+
+    db.session.delete(game)
+    db.session.commit()
+
+    return jsonify({"msg": f"Videojuego '{game.title}' eliminado con éxito"})
+
 
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
     app.run(debug=True)
-
